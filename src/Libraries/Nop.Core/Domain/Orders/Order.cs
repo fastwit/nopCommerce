@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.Linq;
 using Nop.Core.Domain.Common;
 using Nop.Core.Domain.Customers;
 using Nop.Core.Domain.Discounts;
@@ -25,25 +26,30 @@ namespace Nop.Core.Domain.Orders
 
         #region Utilities
 
+        /// <summary>
+        /// Parse tax rates
+        /// </summary>
+        /// <param name="taxRatesStr"></param>
+        /// <returns></returns>
         protected virtual SortedDictionary<decimal, decimal> ParseTaxRates(string taxRatesStr)
         {
             var taxRatesDictionary = new SortedDictionary<decimal, decimal>();
-            if (String.IsNullOrEmpty(taxRatesStr))
+            if (string.IsNullOrEmpty(taxRatesStr))
                 return taxRatesDictionary;
 
-            string[] lines = taxRatesStr.Split(new [] { ';' }, StringSplitOptions.RemoveEmptyEntries);
-            foreach (string line in lines)
+            var lines = taxRatesStr.Split(new [] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+            foreach (var line in lines)
             {
-                if (String.IsNullOrEmpty(line.Trim()))
+                if (string.IsNullOrEmpty(line.Trim()))
                     continue;
 
-                string[] taxes = line.Split(new [] { ':' });
+                var taxes = line.Split(':');
                 if (taxes.Length == 2)
                 {
                     try
                     {
-                        decimal taxRate = decimal.Parse(taxes[0].Trim(), CultureInfo.InvariantCulture);
-                        decimal taxValue = decimal.Parse(taxes[1].Trim(), CultureInfo.InvariantCulture);
+                        var taxRate = decimal.Parse(taxes[0].Trim(), CultureInfo.InvariantCulture);
+                        var taxValue = decimal.Parse(taxes[1].Trim(), CultureInfo.InvariantCulture);
                         taxRatesDictionary.Add(taxRate, taxValue);
                     }
                     catch (Exception exc)
@@ -54,7 +60,7 @@ namespace Nop.Core.Domain.Orders
             }
 
             //add at least one tax rate (0%)
-            if (taxRatesDictionary.Count == 0)
+            if (!taxRatesDictionary.Any())
                 taxRatesDictionary.Add(decimal.Zero, decimal.Zero);
 
             return taxRatesDictionary;
@@ -88,6 +94,11 @@ namespace Nop.Core.Domain.Orders
         /// Gets or sets the shipping address identifier
         /// </summary>
         public int? ShippingAddressId { get; set; }
+
+        /// <summary>
+        /// Gets or sets the pickup address identifier
+        /// </summary>
+        public int? PickupAddressId { get; set; }
 
         /// <summary>
         /// Gets or sets a value indicating whether a customer chose "pick up in store" shipping option
@@ -200,9 +211,9 @@ namespace Nop.Core.Domain.Orders
         public decimal RefundedAmount { get; set; }
 
         /// <summary>
-        /// Gets or sets the value indicating whether reward points were earned (gained) for placing this order
+        /// Gets or sets the reward points history entry identifier when reward points were earned (gained) for placing this order
         /// </summary>
-        public bool RewardPointsWereAdded { get; set; }
+        public int? RewardPointsHistoryEntryId { get; set; }
         
         /// <summary>
         /// Gets or sets the checkout attribute description
@@ -310,7 +321,7 @@ namespace Nop.Core.Domain.Orders
         public string ShippingMethod { get; set; }
 
         /// <summary>
-        /// Gets or sets the shipping rate computation method identifier
+        /// Gets or sets the shipping rate computation method identifier or the pickup point provider identifier (if PickUpInStore is true)
         /// </summary>
         public string ShippingRateComputationMethodSystemName { get; set; }
 
@@ -328,6 +339,11 @@ namespace Nop.Core.Domain.Orders
         /// Gets or sets the date and time of order creation
         /// </summary>
         public DateTime CreatedOnUtc { get; set; }
+
+        /// <summary>
+        /// Gets or sets the custom order number without prefix
+        /// </summary>
+        public string CustomOrderNumber { get; set; }
 
         #endregion
 
@@ -347,7 +363,12 @@ namespace Nop.Core.Domain.Orders
         /// Gets or sets the shipping address
         /// </summary>
         public virtual Address ShippingAddress { get; set; }
-        
+
+        /// <summary>
+        /// Gets or sets the pickup address
+        /// </summary>
+        public virtual Address PickupAddress { get; set; }
+
         /// <summary>
         /// Gets or sets the reward points history record (spent by a customer when placing this order)
         /// </summary>
@@ -409,11 +430,11 @@ namespace Nop.Core.Domain.Orders
         {
             get
             {
-                return (OrderStatus)this.OrderStatusId;
+                return (OrderStatus)OrderStatusId;
             }
             set
             {
-                this.OrderStatusId = (int)value;
+                OrderStatusId = (int)value;
             }
         }
 
@@ -424,11 +445,11 @@ namespace Nop.Core.Domain.Orders
         {
             get
             {
-                return (PaymentStatus)this.PaymentStatusId;
+                return (PaymentStatus)PaymentStatusId;
             }
             set
             {
-                this.PaymentStatusId = (int)value;
+                PaymentStatusId = (int)value;
             }
         }
 
@@ -439,11 +460,11 @@ namespace Nop.Core.Domain.Orders
         {
             get
             {
-                return (ShippingStatus)this.ShippingStatusId;
+                return (ShippingStatus)ShippingStatusId;
             }
             set
             {
-                this.ShippingStatusId = (int)value;
+                ShippingStatusId = (int)value;
             }
         }
 
@@ -454,11 +475,11 @@ namespace Nop.Core.Domain.Orders
         {
             get
             {
-                return (TaxDisplayType)this.CustomerTaxDisplayTypeId;
+                return (TaxDisplayType)CustomerTaxDisplayTypeId;
             }
             set
             {
-                this.CustomerTaxDisplayTypeId = (int)value;
+                CustomerTaxDisplayTypeId = (int)value;
             }
         }
 
@@ -469,7 +490,7 @@ namespace Nop.Core.Domain.Orders
         {
             get
             {
-                return ParseTaxRates(this.TaxRates);
+                return ParseTaxRates(TaxRates);
             }
         }
         

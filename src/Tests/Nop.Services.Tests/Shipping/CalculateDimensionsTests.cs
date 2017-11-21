@@ -25,7 +25,6 @@ namespace Nop.Services.Tests.Shipping
     public class CalculateDimensionsTests : ServiceTest
     {
         private IRepository<ShippingMethod> _shippingMethodRepository;
-        private IRepository<DeliveryDate> _deliveryDateRepository;
         private IRepository<Warehouse> _warehouseRepository;
         private ILogger _logger;
         private IProductAttributeParser _productAttributeParser;
@@ -44,11 +43,13 @@ namespace Nop.Services.Tests.Shipping
         [SetUp]
         public new void SetUp()
         {
-            _shippingSettings = new ShippingSettings();
-            _shippingSettings.UseCubeRootMethod = true;
+            _shippingSettings = new ShippingSettings
+            {
+                UseCubeRootMethod = true,
+                ConsiderAssociatedProductsDimensions = true
+            };
 
             _shippingMethodRepository = MockRepository.GenerateMock<IRepository<ShippingMethod>>();
-            _deliveryDateRepository = MockRepository.GenerateMock<IRepository<DeliveryDate>>();
             _warehouseRepository = MockRepository.GenerateMock<IRepository<Warehouse>>();
             _logger = new NullLogger();
             _productAttributeParser = MockRepository.GenerateMock<IProductAttributeParser>();
@@ -72,7 +73,6 @@ namespace Nop.Services.Tests.Shipping
 
             _shoppingCartSettings = new ShoppingCartSettings();
             _shippingService = new ShippingService(_shippingMethodRepository,
-                _deliveryDateRepository,
                 _warehouseRepository,
                 _logger,
                 _productService,
@@ -106,8 +106,7 @@ namespace Nop.Services.Tests.Shipping
                     }),
             };
 
-            decimal length, width, height;
-            _shippingService.GetDimensions(items, out width, out length, out height);
+            _shippingService.GetDimensions(items, out decimal width, out decimal length, out decimal height);
             length.ShouldEqual(0);
             width.ShouldEqual(0);
             height.ShouldEqual(0);
@@ -149,8 +148,7 @@ namespace Nop.Services.Tests.Shipping
                 })
             };
 
-            decimal length, width, height;
-            _shippingService.GetDimensions(items, out width, out length, out height);
+            _shippingService.GetDimensions(items, out decimal width, out decimal length, out decimal height);
             length.ShouldEqual(2);
             width.ShouldEqual(3);
             height.ShouldEqual(4);
@@ -173,8 +171,7 @@ namespace Nop.Services.Tests.Shipping
                 })
             };
 
-            decimal length, width, height;
-            _shippingService.GetDimensions(items, out width, out length, out height);
+            _shippingService.GetDimensions(items, out decimal width, out decimal length, out decimal height);
             length.ShouldEqual(4);
             width.ShouldEqual(4);
             height.ShouldEqual(4);
@@ -196,10 +193,8 @@ namespace Nop.Services.Tests.Shipping
                     }
                 })
             };
-
-
-            decimal length, width, height;
-            _shippingService.GetDimensions(items, out width, out length, out height);
+            
+            _shippingService.GetDimensions(items, out decimal width, out decimal length, out decimal height);
             Math.Round(length, 2).ShouldEqual(2.88);
             Math.Round(width, 2).ShouldEqual(2.88);
             Math.Round(height, 2).ShouldEqual(2.88);
@@ -232,8 +227,7 @@ namespace Nop.Services.Tests.Shipping
                                 })
             };
 
-            decimal length, width, height;
-            _shippingService.GetDimensions(items, out width, out length, out height);
+            _shippingService.GetDimensions(items, out decimal width, out decimal length, out decimal height);
             Math.Round(length, 2).ShouldEqual(3.78);
             Math.Round(width, 2).ShouldEqual(5);    //preserve max width
             Math.Round(height, 2).ShouldEqual(3.78);
@@ -244,7 +238,7 @@ namespace Nop.Services.Tests.Shipping
         {
             //take 8 cubes of 1x1x1 which is "packed" as 2x2x2 
             var items = new List<GetShippingOptionRequest.PackageItem>();
-            for (int i = 0; i < 8; i++)
+            for (var i = 0; i < 8; i++)
                 items.Add(new GetShippingOptionRequest.PackageItem(new ShoppingCartItem
                         {
                             Quantity = 1,
@@ -256,8 +250,7 @@ namespace Nop.Services.Tests.Shipping
                                 }
                         }));
 
-            decimal length, width, height;
-            _shippingService.GetDimensions(items, out width, out length, out height);
+            _shippingService.GetDimensions(items, out decimal width, out decimal length, out decimal height);
             Math.Round(length, 2).ShouldEqual(2);
             Math.Round(width, 2).ShouldEqual(2);
             Math.Round(height, 2).ShouldEqual(2);

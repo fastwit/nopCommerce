@@ -16,21 +16,28 @@ namespace Nop.Services.Polls
 
         private readonly IRepository<Poll> _pollRepository;
         private readonly IRepository<PollAnswer> _pollAnswerRepository;
-        private readonly IRepository<PollVotingRecord> _pollVotingRecords;
+        private readonly IRepository<PollVotingRecord> _pollVotingRecordRepository;
         private readonly IEventPublisher _eventPublisher;
 
         #endregion
 
         #region Ctor
 
+        /// <summary>
+        /// Ctor
+        /// </summary>
+        /// <param name="pollRepository">Poll repository</param>
+        /// <param name="pollAnswerRepository">Poll answer repository</param>
+        /// <param name="pollVotingRecordRepository">Poll voting record repository></param>
+        /// <param name="eventPublisher"></param>
         public PollService(IRepository<Poll> pollRepository, 
             IRepository<PollAnswer> pollAnswerRepository,
-            IRepository<PollVotingRecord> pollVotingRecords,
+            IRepository<PollVotingRecord> pollVotingRecordRepository,
             IEventPublisher eventPublisher)
         {
             this._pollRepository = pollRepository;
             this._pollAnswerRepository = pollAnswerRepository;
-            this._pollVotingRecords = pollVotingRecords;
+            this._pollVotingRecordRepository = pollVotingRecordRepository;
             this._eventPublisher = eventPublisher;
         }
 
@@ -50,36 +57,19 @@ namespace Nop.Services.Polls
 
             return _pollRepository.GetById(pollId);
         }
-
-        /// <summary>
-        /// Gets a poll
-        /// </summary>
-        /// <param name="systemKeyword">The poll system keyword</param>
-        /// <param name="languageId">Language identifier. 0 if you want to get all polls</param>
-        /// <returns>Poll</returns>
-        public virtual Poll GetPollBySystemKeyword(string systemKeyword, int languageId)
-        {
-            if (String.IsNullOrWhiteSpace(systemKeyword))
-                return null;
-
-            var query = from p in _pollRepository.Table
-                        where p.SystemKeyword == systemKeyword && p.LanguageId == languageId
-                        select p;
-            var poll = query.FirstOrDefault();
-            return poll;
-        }
         
         /// <summary>
         /// Gets polls
         /// </summary>
         /// <param name="languageId">Language identifier. 0 if you want to get all polls</param>
         /// <param name="loadShownOnHomePageOnly">Retrieve only shown on home page polls</param>
+        /// <param name="systemKeyword">The poll system keyword. Pass null if you want to get all polls</param>
         /// <param name="pageIndex">Page index</param>
         /// <param name="pageSize">Page size</param>
         /// <param name="showHidden">A value indicating whether to show hidden records</param>
         /// <returns>Polls</returns>
         public virtual IPagedList<Poll> GetPolls(int languageId = 0, bool loadShownOnHomePageOnly = false,
-            int pageIndex = 0, int pageSize = int.MaxValue, bool showHidden = false)
+            string systemKeyword = null, int pageIndex = 0, int pageSize = int.MaxValue, bool showHidden = false)
         {
             var query = _pollRepository.Table;
             if (!showHidden)
@@ -97,7 +87,11 @@ namespace Nop.Services.Polls
             {
                 query = query.Where(p => p.LanguageId == languageId);
             }
-            query = query.OrderBy(p => p.DisplayOrder);
+            if (!string.IsNullOrEmpty(systemKeyword))
+            {
+                query = query.Where(p => p.SystemKeyword == systemKeyword);
+            }
+            query = query.OrderBy(p => p.DisplayOrder).ThenBy(p => p.Id);
 
             var polls = new PagedList<Poll>(query, pageIndex, pageSize);
             return polls;
@@ -110,7 +104,7 @@ namespace Nop.Services.Polls
         public virtual void DeletePoll(Poll poll)
         {
             if (poll == null)
-                throw new ArgumentNullException("poll");
+                throw new ArgumentNullException(nameof(poll));
 
             _pollRepository.Delete(poll);
 
@@ -125,7 +119,7 @@ namespace Nop.Services.Polls
         public virtual void InsertPoll(Poll poll)
         {
             if (poll == null)
-                throw new ArgumentNullException("poll");
+                throw new ArgumentNullException(nameof(poll));
 
             _pollRepository.Insert(poll);
 
@@ -140,7 +134,7 @@ namespace Nop.Services.Polls
         public virtual void UpdatePoll(Poll poll)
         {
             if (poll == null)
-                throw new ArgumentNullException("poll");
+                throw new ArgumentNullException(nameof(poll));
 
             _pollRepository.Update(poll);
 
@@ -168,7 +162,7 @@ namespace Nop.Services.Polls
         public virtual void DeletePollAnswer(PollAnswer pollAnswer)
         {
             if (pollAnswer == null)
-                throw new ArgumentNullException("pollAnswer");
+                throw new ArgumentNullException(nameof(pollAnswer));
 
             _pollAnswerRepository.Delete(pollAnswer);
 
@@ -177,7 +171,7 @@ namespace Nop.Services.Polls
         }
 
         /// <summary>
-        /// Gets a value indicating whether customer already vited for this poll
+        /// Gets a value indicating whether customer already voted for this poll
         /// </summary>
         /// <param name="pollId">Poll identifier</param>
         /// <param name="customerId">Customer identifier</param>
@@ -188,7 +182,7 @@ namespace Nop.Services.Polls
                 return false;
 
             var result = (from pa in _pollAnswerRepository.Table
-                          join pvr in _pollVotingRecords.Table on pa.Id equals pvr.PollAnswerId
+                          join pvr in _pollVotingRecordRepository.Table on pa.Id equals pvr.PollAnswerId
                           where pa.PollId == pollId && pvr.CustomerId == customerId
                           select pvr).Any();
             return result;

@@ -1,5 +1,5 @@
 ﻿using System.Collections.Generic;
-using Nop.Web.Framework.Mvc;
+using Nop.Web.Framework.Mvc.Models;
 
 namespace Nop.Web.Models.Common
 {
@@ -11,11 +11,6 @@ namespace Nop.Web.Models.Common
         }
 
         public string StoreName { get; set; }
-
-        public string FacebookLink { get; set; }
-        public string TwitterLink { get; set; }
-        public string YoutubeLink { get; set; }
-        public string GooglePlusLink { get; set; }
         public bool WishlistEnabled { get; set; }
         public bool ShoppingCartEnabled { get; set; }
         public bool SitemapEnabled { get; set; }

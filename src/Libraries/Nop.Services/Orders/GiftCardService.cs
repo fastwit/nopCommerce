@@ -46,7 +46,7 @@ namespace Nop.Services.Orders
         public virtual void DeleteGiftCard(GiftCard giftCard)
         {
             if (giftCard == null)
-                throw new ArgumentNullException("giftCard");
+                throw new ArgumentNullException(nameof(giftCard));
 
             _giftCardRepository.Delete(giftCard);
 
@@ -71,6 +71,7 @@ namespace Nop.Services.Orders
         /// Gets all gift cards
         /// </summary>
         /// <param name="purchasedWithOrderId">Associated order ID; null to load all records</param>
+        /// <param name="usedWithOrderId">The order ID in which the gift card was used; null to load all records</param>
         /// <param name="createdFromUtc">Created date from (UTC); null to load all records</param>
         /// <param name="createdToUtc">Created date to (UTC); null to load all records</param>
         /// <param name="isGiftCardActivated">Value indicating whether gift card is activated; null to load all records</param>
@@ -79,7 +80,7 @@ namespace Nop.Services.Orders
         /// <param name="pageIndex">Page index</param>
         /// <param name="pageSize">Page size</param>
         /// <returns>Gift cards</returns>
-        public virtual IPagedList<GiftCard> GetAllGiftCards(int? purchasedWithOrderId = null,
+        public virtual IPagedList<GiftCard> GetAllGiftCards(int? purchasedWithOrderId = null, int? usedWithOrderId = null,
             DateTime? createdFromUtc = null, DateTime? createdToUtc = null, 
             bool? isGiftCardActivated = null, string giftCardCouponCode = null,
             string recipientName = null,
@@ -88,15 +89,17 @@ namespace Nop.Services.Orders
             var query = _giftCardRepository.Table;
             if (purchasedWithOrderId.HasValue)
                 query = query.Where(gc => gc.PurchasedWithOrderItem != null && gc.PurchasedWithOrderItem.OrderId == purchasedWithOrderId.Value);
+            if (usedWithOrderId.HasValue)
+                query = query.Where(gc => gc.GiftCardUsageHistory.Any(history => history.UsedWithOrderId == usedWithOrderId));
             if (createdFromUtc.HasValue)
                 query = query.Where(gc => createdFromUtc.Value <= gc.CreatedOnUtc);
             if (createdToUtc.HasValue)
                 query = query.Where(gc => createdToUtc.Value >= gc.CreatedOnUtc);
             if (isGiftCardActivated.HasValue)
                 query = query.Where(gc => gc.IsGiftCardActivated == isGiftCardActivated.Value);
-            if (!String.IsNullOrEmpty(giftCardCouponCode))
+            if (!string.IsNullOrEmpty(giftCardCouponCode))
                 query = query.Where(gc => gc.GiftCardCouponCode == giftCardCouponCode);
-            if (!String.IsNullOrWhiteSpace(recipientName))
+            if (!string.IsNullOrWhiteSpace(recipientName))
                 query = query.Where(c => c.RecipientName.Contains(recipientName));
             query = query.OrderByDescending(gc => gc.CreatedOnUtc);
 
@@ -111,7 +114,7 @@ namespace Nop.Services.Orders
         public virtual void InsertGiftCard(GiftCard giftCard)
         {
             if (giftCard == null)
-                throw new ArgumentNullException("giftCard");
+                throw new ArgumentNullException(nameof(giftCard));
 
             _giftCardRepository.Insert(giftCard);
 
@@ -126,7 +129,7 @@ namespace Nop.Services.Orders
         public virtual void UpdateGiftCard(GiftCard giftCard)
         {
             if (giftCard == null)
-                throw new ArgumentNullException("giftCard");
+                throw new ArgumentNullException(nameof(giftCard));
 
             _giftCardRepository.Update(giftCard);
 
@@ -163,7 +166,7 @@ namespace Nop.Services.Orders
             if (customer == null)
                 return result;
 
-            string[] couponCodes = customer.ParseAppliedGiftCardCouponCodes();
+            var couponCodes = customer.ParseAppliedGiftCardCouponCodes();
             foreach (var couponCode in couponCodes)
             {
                 var giftCards = GetAllGiftCards(isGiftCardActivated: true, giftCardCouponCode: couponCode);
@@ -183,8 +186,8 @@ namespace Nop.Services.Orders
         /// <returns>Result</returns>
         public virtual string GenerateGiftCardCode()
         {
-            int length = 13;
-            string result = Guid.NewGuid().ToString();
+            var length = 13;
+            var result = Guid.NewGuid().ToString();
             if (result.Length > length)
                 result = result.Substring(0, length);
             return result;

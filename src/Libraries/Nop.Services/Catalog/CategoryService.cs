@@ -5,8 +5,11 @@ using Nop.Core;
 using Nop.Core.Caching;
 using Nop.Core.Data;
 using Nop.Core.Domain.Catalog;
+using Nop.Core.Domain.Common;
 using Nop.Core.Domain.Security;
 using Nop.Core.Domain.Stores;
+using Nop.Core.Extensions;
+using Nop.Data;
 using Nop.Services.Customers;
 using Nop.Services.Events;
 using Nop.Services.Security;
@@ -20,6 +23,7 @@ namespace Nop.Services.Catalog
     public partial class CategoryService : ICategoryService
     {
         #region Constants
+
         /// <summary>
         /// Key for caching
         /// </summary>
@@ -78,12 +82,15 @@ namespace Nop.Services.Catalog
         private readonly IRepository<Product> _productRepository;
         private readonly IRepository<AclRecord> _aclRepository;
         private readonly IRepository<StoreMapping> _storeMappingRepository;
+        private readonly IDbContext _dbContext;
+        private readonly IDataProvider _dataProvider;
         private readonly IWorkContext _workContext;
         private readonly IStoreContext _storeContext;
         private readonly IEventPublisher _eventPublisher;
         private readonly ICacheManager _cacheManager;
         private readonly IStoreMappingService _storeMappingService;
         private readonly IAclService _aclService;
+        private readonly CommonSettings _commonSettings;
         private readonly CatalogSettings _catalogSettings;
 
         #endregion
@@ -99,11 +106,14 @@ namespace Nop.Services.Catalog
         /// <param name="productRepository">Product repository</param>
         /// <param name="aclRepository">ACL record repository</param>
         /// <param name="storeMappingRepository">Store mapping repository</param>
+        /// <param name="dbContext">DB context</param>
+        /// <param name="dataProvider">Data provider</param>
         /// <param name="workContext">Work context</param>
         /// <param name="storeContext">Store context</param>
         /// <param name="eventPublisher">Event publisher</param>
         /// <param name="storeMappingService">Store mapping service</param>
         /// <param name="aclService">ACL service</param>
+        /// <param name="commonSettings">Common settings</param>
         /// <param name="catalogSettings">Catalog settings</param>
         public CategoryService(ICacheManager cacheManager,
             IRepository<Category> categoryRepository,
@@ -111,11 +121,14 @@ namespace Nop.Services.Catalog
             IRepository<Product> productRepository,
             IRepository<AclRecord> aclRepository,
             IRepository<StoreMapping> storeMappingRepository,
+            IDbContext dbContext,
+            IDataProvider dataProvider,
             IWorkContext workContext,
             IStoreContext storeContext,
             IEventPublisher eventPublisher,
             IStoreMappingService storeMappingService,
             IAclService aclService,
+            CommonSettings commonSettings,
             CatalogSettings catalogSettings)
         {
             this._cacheManager = cacheManager;
@@ -124,11 +137,14 @@ namespace Nop.Services.Catalog
             this._productRepository = productRepository;
             this._aclRepository = aclRepository;
             this._storeMappingRepository = storeMappingRepository;
+            this._dbContext = dbContext;
+            this._dataProvider = dataProvider;
             this._workContext = workContext;
             this._storeContext = storeContext;
             this._eventPublisher = eventPublisher;
             this._storeMappingService = storeMappingService;
             this._aclService = aclService;
+            this._commonSettings = commonSettings;
             this._catalogSettings = catalogSettings;
         }
 
@@ -143,10 +159,13 @@ namespace Nop.Services.Catalog
         public virtual void DeleteCategory(Category category)
         {
             if (category == null)
-                throw new ArgumentNullException("category");
+                throw new ArgumentNullException(nameof(category));
 
             category.Deleted = true;
             UpdateCategory(category);
+
+            //event notification
+            _eventPublisher.EntityDeleted(category);
 
             //reset a "Parent category" property of all child subcategories
             var subcategories = GetAllCategoriesByParentCategoryId(category.Id, true);
@@ -169,45 +188,73 @@ namespace Nop.Services.Catalog
         public virtual IPagedList<Category> GetAllCategories(string categoryName = "", int storeId = 0, 
             int pageIndex = 0, int pageSize = int.MaxValue, bool showHidden = false)
         {
+            if (_commonSettings.UseStoredProcedureForLoadingCategories &&
+                _commonSettings.UseStoredProceduresIfSupported && _dataProvider.StoredProceduredSupported)
+            {
+                //stored procedures are enabled for loading categories and supported by the database. 
+                //It's much faster with a large number of categories than the LINQ implementation below 
+
+                //prepare parameters
+                var showHiddenParameter = _dataProvider.GetBooleanParameter("ShowHidden", showHidden);
+                var nameParameter = _dataProvider.GetStringParameter("Name", categoryName ?? string.Empty);
+                var storeIdParameter = _dataProvider.GetInt32Parameter("StoreId", !_catalogSettings.IgnoreStoreLimitations ? storeId : 0);
+                var pageIndexParameter = _dataProvider.GetInt32Parameter("PageIndex", pageIndex);
+                var pageSizeParameter = _dataProvider.GetInt32Parameter("PageSize", pageSize);
+                //pass allowed customer role identifiers as comma-delimited string
+                var customerRoleIdsParameter = _dataProvider.GetStringParameter("CustomerRoleIds", !_catalogSettings.IgnoreAcl ? string.Join(",", _workContext.CurrentCustomer.GetCustomerRoleIds()) : string.Empty);
+                
+                var totalRecordsParameter = _dataProvider.GetOutputInt32Parameter("TotalRecords");
+
+                //invoke stored procedure
+                var categories = _dbContext.ExecuteStoredProcedureList<Category>("CategoryLoadAllPaged",
+                    showHiddenParameter, nameParameter, storeIdParameter, customerRoleIdsParameter,
+                    pageIndexParameter, pageSizeParameter, totalRecordsParameter);
+                var totalRecords = (totalRecordsParameter.Value != DBNull.Value) ? Convert.ToInt32(totalRecordsParameter.Value) : 0;
+
+                //paging
+                return new PagedList<Category>(categories, pageIndex, pageSize, totalRecords);
+            }
+
+            //stored procedures aren't supported. Use LINQ
             var query = _categoryRepository.Table;
             if (!showHidden)
                 query = query.Where(c => c.Published);
-            if (!String.IsNullOrWhiteSpace(categoryName))
+            if (!string.IsNullOrWhiteSpace(categoryName))
                 query = query.Where(c => c.Name.Contains(categoryName));
             query = query.Where(c => !c.Deleted);
-            query = query.OrderBy(c => c.ParentCategoryId).ThenBy(c => c.DisplayOrder);
-            
-            if (!showHidden && (!_catalogSettings.IgnoreAcl || (storeId > 0 && !_catalogSettings.IgnoreStoreLimitations)))
+            query = query.OrderBy(c => c.ParentCategoryId).ThenBy(c => c.DisplayOrder).ThenBy(c => c.Id);
+
+            if ((storeId > 0 && !_catalogSettings.IgnoreStoreLimitations) || (!showHidden && !_catalogSettings.IgnoreAcl))
             {
-                if (!_catalogSettings.IgnoreAcl)
+                if (!showHidden && !_catalogSettings.IgnoreAcl)
                 {
                     //ACL (access control list)
                     var allowedCustomerRolesIds = _workContext.CurrentCustomer.GetCustomerRoleIds();
                     query = from c in query
-                            join acl in _aclRepository.Table
+                        join acl in _aclRepository.Table
                             on new { c1 = c.Id, c2 = "Category" } equals new { c1 = acl.EntityId, c2 = acl.EntityName } into c_acl
-                            from acl in c_acl.DefaultIfEmpty()
-                            where !c.SubjectToAcl || allowedCustomerRolesIds.Contains(acl.CustomerRoleId)
-                            select c;
+                        from acl in c_acl.DefaultIfEmpty()
+                        where !c.SubjectToAcl || allowedCustomerRolesIds.Contains(acl.CustomerRoleId)
+                        select c;
                 }
                 if (storeId > 0 && !_catalogSettings.IgnoreStoreLimitations)
                 {
                     //Store mapping
                     query = from c in query
-                            join sm in _storeMappingRepository.Table
+                        join sm in _storeMappingRepository.Table
                             on new { c1 = c.Id, c2 = "Category" } equals new { c1 = sm.EntityId, c2 = sm.EntityName } into c_sm
-                            from sm in c_sm.DefaultIfEmpty()
-                            where !c.LimitedToStores || storeId == sm.StoreId
-                            select c;
+                        from sm in c_sm.DefaultIfEmpty()
+                        where !c.LimitedToStores || storeId == sm.StoreId
+                        select c;
                 }
 
                 //only distinct categories (group by ID)
                 query = from c in query
-                        group c by c.Id
-                        into cGroup
-                        orderby cGroup.Key
-                        select cGroup.FirstOrDefault();
-                query = query.OrderBy(c => c.ParentCategoryId).ThenBy(c => c.DisplayOrder);
+                    group c by c.Id
+                    into cGroup
+                    orderby cGroup.Key
+                    select cGroup.FirstOrDefault();
+                query = query.OrderBy(c => c.ParentCategoryId).ThenBy(c => c.DisplayOrder).ThenBy(c => c.Id);
             }
             
             var unsortedCategories = query.ToList();
@@ -217,7 +264,6 @@ namespace Nop.Services.Catalog
 
             //paging
             return new PagedList<Category>(sortedCategories, pageIndex, pageSize);
-
         }
 
         /// <summary>
@@ -230,7 +276,7 @@ namespace Nop.Services.Catalog
         public virtual IList<Category> GetAllCategoriesByParentCategoryId(int parentCategoryId,
             bool showHidden = false, bool includeAllLevels = false)
         {
-            string key = string.Format(CATEGORIES_BY_PARENT_CATEGORY_ID_KEY, parentCategoryId, showHidden, _workContext.CurrentCustomer.Id, _storeContext.CurrentStore.Id, includeAllLevels);
+            var key = string.Format(CATEGORIES_BY_PARENT_CATEGORY_ID_KEY, parentCategoryId, showHidden, _workContext.CurrentCustomer.Id, _storeContext.CurrentStore.Id, includeAllLevels);
             return _cacheManager.Get(key, () =>
             {
                 var query = _categoryRepository.Table;
@@ -238,7 +284,7 @@ namespace Nop.Services.Catalog
                     query = query.Where(c => c.Published);
                 query = query.Where(c => c.ParentCategoryId == parentCategoryId);
                 query = query.Where(c => !c.Deleted);
-                query = query.OrderBy(c => c.DisplayOrder);
+                query = query.OrderBy(c => c.DisplayOrder).ThenBy(c => c.Id);
 
                 if (!showHidden && (!_catalogSettings.IgnoreAcl || !_catalogSettings.IgnoreStoreLimitations))
                 {
@@ -270,20 +316,21 @@ namespace Nop.Services.Catalog
                             into cGroup
                             orderby cGroup.Key
                             select cGroup.FirstOrDefault();
-                    query = query.OrderBy(c => c.DisplayOrder);
+                    query = query.OrderBy(c => c.DisplayOrder).ThenBy(c => c.Id);
                 }
 
                 var categories = query.ToList();
-                if (includeAllLevels)
+
+                if (!includeAllLevels)
+                    return categories;
+
+                var childCategories = new List<Category>();
+                //add child levels
+                foreach (var category in categories)
                 {
-                    var childCategories = new List<Category>();
-                    //add child levels
-                    foreach (var category in categories)
-                    {
-                        childCategories.AddRange(GetAllCategoriesByParentCategoryId(category.Id, showHidden, includeAllLevels));
-                    }
-                    categories.AddRange(childCategories);
+                    childCategories.AddRange(GetAllCategoriesByParentCategoryId(category.Id, showHidden, true));
                 }
+                categories.AddRange(childCategories);
                 return categories;
             });
         }
@@ -296,7 +343,7 @@ namespace Nop.Services.Catalog
         public virtual IList<Category> GetAllCategoriesDisplayedOnHomePage(bool showHidden = false)
         {
             var query = from c in _categoryRepository.Table
-                        orderby c.DisplayOrder
+                        orderby c.DisplayOrder, c.Id
                         where c.Published &&
                         !c.Deleted && 
                         c.ShowOnHomePage
@@ -323,7 +370,7 @@ namespace Nop.Services.Catalog
             if (categoryId == 0)
                 return null;
             
-            string key = string.Format(CATEGORIES_BY_ID_KEY, categoryId);
+            var key = string.Format(CATEGORIES_BY_ID_KEY, categoryId);
             return _cacheManager.Get(key, () => _categoryRepository.GetById(categoryId));
         }
 
@@ -334,7 +381,7 @@ namespace Nop.Services.Catalog
         public virtual void InsertCategory(Category category)
         {
             if (category == null)
-                throw new ArgumentNullException("category");
+                throw new ArgumentNullException(nameof(category));
 
             _categoryRepository.Insert(category);
 
@@ -353,7 +400,7 @@ namespace Nop.Services.Catalog
         public virtual void UpdateCategory(Category category)
         {
             if (category == null)
-                throw new ArgumentNullException("category");
+                throw new ArgumentNullException(nameof(category));
 
             //validate category hierarchy
             var parentCategory = GetCategoryById(category.ParentCategoryId);
@@ -377,7 +424,6 @@ namespace Nop.Services.Catalog
             _eventPublisher.EntityUpdated(category);
         }
         
-        
         /// <summary>
         /// Deletes a product category mapping
         /// </summary>
@@ -385,7 +431,7 @@ namespace Nop.Services.Catalog
         public virtual void DeleteProductCategory(ProductCategory productCategory)
         {
             if (productCategory == null)
-                throw new ArgumentNullException("productCategory");
+                throw new ArgumentNullException(nameof(productCategory));
 
             _productCategoryRepository.Delete(productCategory);
 
@@ -411,7 +457,7 @@ namespace Nop.Services.Catalog
             if (categoryId == 0)
                 return new PagedList<ProductCategory>(new List<ProductCategory>(), pageIndex, pageSize);
 
-            string key = string.Format(PRODUCTCATEGORIES_ALLBYCATEGORYID_KEY, showHidden, categoryId, pageIndex, pageSize, _workContext.CurrentCustomer.Id, _storeContext.CurrentStore.Id);
+            var key = string.Format(PRODUCTCATEGORIES_ALLBYCATEGORYID_KEY, showHidden, categoryId, pageIndex, pageSize, _workContext.CurrentCustomer.Id, _storeContext.CurrentStore.Id);
             return _cacheManager.Get(key, () =>
             {
                 var query = from pc in _productCategoryRepository.Table
@@ -419,7 +465,7 @@ namespace Nop.Services.Catalog
                             where pc.CategoryId == categoryId &&
                                   !p.Deleted &&
                                   (showHidden || p.Published)
-                            orderby pc.DisplayOrder
+                            orderby pc.DisplayOrder, pc.Id
                             select pc;
 
                 if (!showHidden && (!_catalogSettings.IgnoreAcl || !_catalogSettings.IgnoreStoreLimitations))
@@ -454,7 +500,7 @@ namespace Nop.Services.Catalog
                             into cGroup
                             orderby cGroup.Key
                             select cGroup.FirstOrDefault();
-                    query = query.OrderBy(pc => pc.DisplayOrder);
+                    query = query.OrderBy(pc => pc.DisplayOrder).ThenBy(pc => pc.Id);
                 }
 
                 var productCategories = new PagedList<ProductCategory>(query, pageIndex, pageSize);
@@ -472,6 +518,7 @@ namespace Nop.Services.Catalog
         {
             return GetProductCategoriesByProductId(productId, _storeContext.CurrentStore.Id, showHidden);
         }
+
         /// <summary>
         /// Gets a product category mapping collection
         /// </summary>
@@ -484,7 +531,7 @@ namespace Nop.Services.Catalog
             if (productId == 0)
                 return new List<ProductCategory>();
 
-            string key = string.Format(PRODUCTCATEGORIES_ALLBYPRODUCTID_KEY, showHidden, productId, _workContext.CurrentCustomer.Id, storeId);
+            var key = string.Format(PRODUCTCATEGORIES_ALLBYPRODUCTID_KEY, showHidden, productId, _workContext.CurrentCustomer.Id, storeId);
             return _cacheManager.Get(key, () =>
             {
                 var query = from pc in _productCategoryRepository.Table
@@ -492,7 +539,7 @@ namespace Nop.Services.Catalog
                             where pc.ProductId == productId &&
                                   !c.Deleted &&
                                   (showHidden || c.Published)
-                            orderby pc.DisplayOrder
+                            orderby pc.DisplayOrder, pc.Id
                             select pc;
 
                 var allProductCategories = query.ToList();
@@ -536,7 +583,7 @@ namespace Nop.Services.Catalog
         public virtual void InsertProductCategory(ProductCategory productCategory)
         {
             if (productCategory == null)
-                throw new ArgumentNullException("productCategory");
+                throw new ArgumentNullException(nameof(productCategory));
             
             _productCategoryRepository.Insert(productCategory);
 
@@ -555,7 +602,7 @@ namespace Nop.Services.Catalog
         public virtual void UpdateProductCategory(ProductCategory productCategory)
         {
             if (productCategory == null)
-                throw new ArgumentNullException("productCategory");
+                throw new ArgumentNullException(nameof(productCategory));
 
             _productCategoryRepository.Update(productCategory);
 
@@ -566,24 +613,23 @@ namespace Nop.Services.Catalog
             //event notification
             _eventPublisher.EntityUpdated(productCategory);
         }
-        
+
         /// <summary>
-        /// Returns a list of IDs of not existing categories
+        /// Returns a list of names of not existing categories
         /// </summary>
-        /// <param name="categoryIds">The IDs of the categories to check</param>
-        /// <returns>List of IDs not existing categories</returns>
-        public virtual int[] GetNotExistingCategories(int[] categoryIds)
+        /// <param name="categoryNames">The nemes of the categories to check</param>
+        /// <returns>List of names not existing categories</returns>
+        public virtual string[] GetNotExistingCategories(string[] categoryNames)
         {
-            if (categoryIds == null)
-                throw new ArgumentNullException("categoryIds");
+            if (categoryNames == null)
+                throw new ArgumentNullException(nameof(categoryNames));
 
             var query = _categoryRepository.Table;
-            var queryFilter = categoryIds.Distinct().ToArray();
-            var filter = query.Select(c => c.Id).Where(c => queryFilter.Contains(c)).ToList();
+            var queryFilter = categoryNames.Distinct().ToArray();
+            var filter = query.Select(c => c.Name).Where(c => queryFilter.Contains(c)).ToList();
 
             return queryFilter.Except(filter).ToArray();
         }
-
 
         /// <summary>
         /// Get category IDs for products
@@ -598,7 +644,25 @@ namespace Nop.Services.Catalog
                 .Select(p => new {p.ProductId, p.CategoryId}).ToList()
                 .GroupBy(a => a.ProductId)
                 .ToDictionary(items => items.Key, items => items.Select(a => a.CategoryId).ToArray());
-        } 
+        }
+
+        /// <summary>
+        /// Gets categories by identifier
+        /// </summary>
+        /// <param name="categoryIds">Category identifiers</param>
+        /// <returns>Categories</returns>
+        public virtual List<Category> GetCategoriesByIds(int[] categoryIds)
+        {
+            if (categoryIds == null || categoryIds.Length == 0)
+                return new List<Category>();
+
+            var query = from p in _categoryRepository.Table
+                where categoryIds.Contains(p.Id) && !p.Deleted
+                select p;
+            
+            return query.ToList();
+        }
+
         #endregion
     }
 }
